@@ -153,15 +153,17 @@ async fn run_swarm(
         handles.push(tokio::spawn(async move { run_worker(config, src).await }));
     }
     let results = join_all(handles).await;
-    let mut total_submitted = 0u64;
-    let mut total_accepted = 0u64;
+    let mut total_texts = 0u64;
+    let mut total_embedded = 0u64;
+    let mut total_ingested = 0u64;
     let mut total_429 = 0u64;
     let mut total_errors = 0u64;
     for r in results {
         match r {
             Ok(Ok(stats)) => {
-                total_submitted += stats.nodes_submitted;
-                total_accepted += stats.nodes_accepted;
+                total_texts += stats.texts_submitted;
+                total_embedded += stats.embeddings_received;
+                total_ingested += stats.embeddings_ingested;
                 total_429 += stats.rate_limit_hits;
                 total_errors += stats.transport_errors;
             }
@@ -169,7 +171,7 @@ async fn run_swarm(
             Err(e) => tracing::error!(err = %e, "worker task panicked"),
         }
     }
-    info!(total_submitted, total_accepted, total_429, total_errors, "swarm done");
+    info!(total_texts, total_embedded, total_ingested, total_429, total_errors, "swarm done");
     Ok(())
 }
 
