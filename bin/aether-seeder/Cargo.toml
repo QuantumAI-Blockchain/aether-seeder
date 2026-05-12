@@ -1,0 +1,22 @@
+[package]
+name = "aether-seeder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI: spawn N concurrent seeder agents to grow Aether Mind's Knowledge Fabric."
+
+[[bin]]
+name = "aether-seeder"
+path = "src/main.rs"
+
+[dependencies]
+seeder-common = { path = "../../crates/seeder-common" }
+seeder-agent = { path = "../../crates/seeder-agent" }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
