@@ -164,12 +164,10 @@ impl GrokipediaSource {
             }
         };
 
-        // Cap body length defensively.
-        let body = if body.len() > ARTICLE_MAX_CHARS {
-            &body[..ARTICLE_MAX_CHARS]
-        } else {
-            &body
-        };
+        // Cap body length defensively. Slice on a UTF-8 char boundary —
+        // naive byte slicing panics when the cut falls inside a multi-byte
+        // codepoint (e.g. an em-dash at byte 49999..50002).
+        let body = safe_truncate(&body, ARTICLE_MAX_CHARS);
 
         let mut new_chunks = Vec::new();
         let mut dedup = self.dedup.lock().await;
@@ -228,6 +226,21 @@ impl KnowledgeSource for GrokipediaSource {
             self.refill_from_next_topic().await?;
         }
     }
+}
+
+/// Truncate `s` to at most `max_bytes` while preserving UTF-8 char
+/// boundaries — a naive `&s[..n]` panics if `n` falls inside a
+/// multi-byte codepoint, which Grokipedia articles routinely contain
+/// (em-dashes, smart quotes, mathematical symbols).
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut idx = max_bytes;
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    &s[..idx]
 }
 
 // ── HTML cleaning + chunking ────────────────────────────────────────────

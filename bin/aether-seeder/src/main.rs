@@ -122,6 +122,16 @@ fn build_source(name: &str) -> Result<Arc<dyn KnowledgeSource>> {
                 .context("build GrokipediaSource")?;
             Ok(Arc::new(src))
         }
+        "wikipedia" => {
+            let src = seeder_source_wikipedia::WikipediaSource::new()
+                .context("build WikipediaSource")?;
+            Ok(Arc::new(src))
+        }
+        "arxiv" => {
+            let src = seeder_source_arxiv::ArxivSource::new()
+                .context("build ArxivSource")?;
+            Ok(Arc::new(src))
+        }
         other => anyhow::bail!(
             "unknown source `{}` — implement and register it in main.rs (see docs/DESIGN.md)",
             other

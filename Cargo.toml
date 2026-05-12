@@ -4,6 +4,8 @@ members = [
     "crates/seeder-common",
     "crates/seeder-agent",
     "crates/seeder-source-grokipedia",
+    "crates/seeder-source-wikipedia",
+    "crates/seeder-source-arxiv",
     "bin/aether-seeder",
 ]
 
