@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 seeder-common = { path = "../../crates/seeder-common" }
 seeder-agent = { path = "../../crates/seeder-agent" }
+seeder-source-grokipedia = { path = "../../crates/seeder-source-grokipedia" }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

@@ -15,10 +15,11 @@ Knowledge Fabric.
 ```
 aether-seeder/
 ├── crates/
-│   ├── seeder-common/     # KnowledgeSource trait, SeedNode, DedupSet, SephirotDomain
-│   └── seeder-agent/      # Single worker (run_worker fn), HTTP client, retry/backoff
+│   ├── seeder-common/                # KnowledgeSource trait, SeedNode, DedupSet, SephirotDomain
+│   ├── seeder-agent/                 # Single worker (run_worker fn), HTTP client, retry/backoff
+│   └── seeder-source-grokipedia/     # KnowledgeSource impl: grokipedia.com → Sephirot-tagged SeedNodes
 └── bin/
-    └── aether-seeder/     # CLI: `aether-seeder spawn -n 250`
+    └── aether-seeder/                # CLI: `aether-seeder spawn -n 250 --source grokipedia`
 ```
 
 ## Build
@@ -38,9 +39,22 @@ aether-seeder spawn -n 10 \
   --max-batches 5
 ```
 
-The `placeholder` source emits stub text so you can validate the swarm,
-HTTP path, and dedup pipeline against a real Aether Mind without spamming
-production with junk. Replace with a real source before going live.
+Two sources ship today:
+
+- `placeholder` — emits stub text so you can validate the swarm, HTTP path,
+  and dedup pipeline against a real Aether Mind without spamming production
+  with junk.
+- `grokipedia` — pulls ~100 curated articles across the 10 Sephirot
+  cognitive domains from `grokipedia.com`, strips HTML, chunks at sentence
+  boundaries (800 chars max per chunk, 40 chars min), dedups by content
+  hash, and emits Sephirot-tagged `SeedNode`s. See
+  `crates/seeder-source-grokipedia/src/topics.rs` for the topic list.
+
+```bash
+aether-seeder spawn -n 1 --source grokipedia \
+  --batch-size 50 \
+  --max-batches 5
+```
 
 ## Production rollout
 

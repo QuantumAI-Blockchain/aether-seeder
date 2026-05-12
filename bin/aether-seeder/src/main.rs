@@ -37,8 +37,9 @@ enum Cmd {
         #[arg(long, env = "ADMIN_API_KEY")]
         admin_key: String,
 
-        /// Knowledge source identifier. Currently only `placeholder` is wired;
-        /// implement `GrokipediaSource` etc. per docs/DESIGN.md.
+        /// Knowledge source identifier. Built-in: `placeholder` (stub text
+        /// for smoke tests), `grokipedia` (curated articles from
+        /// grokipedia.com, ~100 topics across 8 Sephirot domains).
         #[arg(long, default_value = "placeholder")]
         source: String,
 
@@ -78,30 +79,49 @@ async fn main() -> Result<()> {
 
 fn describe_protocol() {
     println!(
-        r#"POST {{base_url}}/aether/knowledge/sync
-X-Admin-Key: {{admin_key}}
-Content-Type: application/json
+        r#"Aether Mind ingestion path (verified 2026-05-12 against
+aether-core/bin/aether-mind/src/main.rs):
 
-{{
-  "nodes": [
-    {{
-      "text": "...",
-      "domain": "Chochmah",
-      "source": "seeder_agent_47:grokipedia:Quantum_computing",
-      "confidence": 0.85
-    }}
-  ]
-}}
+  POST {{base_url}}/aether/gradients
+  X-Admin-Key: {{admin_key}}
+  Content-Type: application/json
 
-NB: confirm the actual KnowledgeSyncRequest shape against
-aether-core/bin/aether-mind/src/main.rs and adjust seeder-agent::SyncRequest
-before going live."#
+  {{
+    "indices": [],
+    "values": [],
+    "total_params": 0,
+    "sparsity": 0.0,
+    "full_norm": 0.0,
+    "residual_norm": 0.0,
+    "embeddings": [
+      {{
+        "embedding": [/* 896 floats */],
+        "content": "...",
+        "domain": 1,
+        "confidence": 0.9
+      }}
+    ],
+    "miner_id": "seeder_agent_47"
+  }}
+
+NB1: POST /aether/knowledge/sync is a peer-to-peer SHARD sync that takes a
+     pre-serialized bincode blob — it is NOT the ingestion endpoint.
+NB2: each `embedding` MUST be Vec<f32> of length 896 (config.embed_dim) or
+     the handler silently skips it.
+NB3: the seeder does not yet compute embeddings. aether-mind needs to
+     expose its TextEmbedder via a new POST /aether/embed handler before
+     this path is end-to-end. See docs/DESIGN.md."#
     );
 }
 
 fn build_source(name: &str) -> Result<Arc<dyn KnowledgeSource>> {
     match name {
         "placeholder" => Ok(Arc::new(PlaceholderSource::new(2000))),
+        "grokipedia" => {
+            let src = seeder_source_grokipedia::GrokipediaSource::new()
+                .context("build GrokipediaSource")?;
+            Ok(Arc::new(src))
+        }
         other => anyhow::bail!(
             "unknown source `{}` — implement and register it in main.rs (see docs/DESIGN.md)",
             other
