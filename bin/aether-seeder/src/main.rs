@@ -37,9 +37,13 @@ enum Cmd {
         #[arg(long, env = "ADMIN_API_KEY")]
         admin_key: String,
 
-        /// Knowledge source identifier. Built-in: `placeholder` (stub text
-        /// for smoke tests), `grokipedia` (curated articles from
-        /// grokipedia.com, ~100 topics across 8 Sephirot domains).
+        /// Knowledge source identifier. Built-in:
+        /// `placeholder` (stub text for smoke tests),
+        /// `grokipedia` (curated articles from grokipedia.com, ~100 topics),
+        /// `wikipedia` (MediaWiki extract API, ~200 topics across all 10
+        /// Sephirot domains),
+        /// `arxiv` (paper abstracts from the arXiv Atom API, ~65 papers
+        /// across foundational ML / quantum / RL / alignment).
         #[arg(long, default_value = "placeholder")]
         source: String,
 

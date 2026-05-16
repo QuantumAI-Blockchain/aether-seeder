@@ -17,9 +17,11 @@ aether-seeder/
 ├── crates/
 │   ├── seeder-common/                # KnowledgeSource trait, SeedNode, DedupSet, SephirotDomain
 │   ├── seeder-agent/                 # Single worker (run_worker fn), HTTP client, retry/backoff
-│   └── seeder-source-grokipedia/     # KnowledgeSource impl: grokipedia.com → Sephirot-tagged SeedNodes
+│   ├── seeder-source-grokipedia/     # KnowledgeSource impl: grokipedia.com → Sephirot-tagged SeedNodes
+│   ├── seeder-source-wikipedia/      # KnowledgeSource impl: en.wikipedia.org MediaWiki extracts
+│   └── seeder-source-arxiv/          # KnowledgeSource impl: export.arxiv.org Atom feed
 └── bin/
-    └── aether-seeder/                # CLI: `aether-seeder spawn -n 250 --source grokipedia`
+    └── aether-seeder/                # CLI: `aether-seeder spawn -n 250 --source wikipedia`
 ```
 
 ## Build
@@ -39,21 +41,49 @@ aether-seeder spawn -n 10 \
   --max-batches 5
 ```
 
-Two sources ship today:
+Four sources ship today:
 
 - `placeholder` — emits stub text so you can validate the swarm, HTTP path,
   and dedup pipeline against a real Aether Mind without spamming production
   with junk.
-- `grokipedia` — pulls ~100 curated articles across the 10 Sephirot
-  cognitive domains from `grokipedia.com`, strips HTML, chunks at sentence
-  boundaries (800 chars max per chunk, 40 chars min), dedups by content
-  hash, and emits Sephirot-tagged `SeedNode`s. See
+- `grokipedia` — pulls ~100 curated articles across the Sephirot cognitive
+  domains from `grokipedia.com`, strips HTML, chunks at sentence boundaries
+  (800 chars max per chunk, 40 chars min), dedups by content hash, and
+  emits Sephirot-tagged `SeedNode`s. See
   `crates/seeder-source-grokipedia/src/topics.rs` for the topic list.
+- `wikipedia` — pulls plain-text article extracts via the English MediaWiki
+  action API (`prop=extracts&explaintext=1&redirects=1`), normalizes
+  whitespace, and chunks them. Ships ~220 hand-curated titles spanning all
+  10 Sephirot domains (including Keter — meta-learning / AGI / cognitive
+  architecture). Rate ceiling: 10–20 req/s; the seeder's default
+  inter-batch pause of 500 ms keeps a single worker well inside that. See
+  `crates/seeder-source-wikipedia/src/topics.rs`; the
+  `topics::rotated_topics(offset)` helper lets long-running swarms explore
+  different slices of the list on re-runs.
+- `arxiv` — pulls paper abstracts via the public arXiv Atom feed
+  (`export.arxiv.org/api/query?id_list=…`), extracts `<title>` and
+  `<summary>` per entry, and emits one `SeedNode` per abstract. Ships ~65
+  hand-picked foundational ML / quantum / RL / alignment papers mapped to
+  Sephirot domains (cs.AI → Keter/Tiferet, quant-ph → Chochmah/Binah,
+  cs.CR → Gevurah, cs.LG → Netzach, cs.CL → Hod, cs.RO → Malkuth,
+  cs.NE → Yesod). arXiv's API guidance asks for ≥3 s between requests
+  from the same IP — the seeder's per-worker pace stays inside that at
+  small concurrency. See `crates/seeder-source-arxiv/src/topics.rs`.
 
 ```bash
+# Wikipedia smoke test (2 workers, 5 nodes/batch, 1 batch each):
+aether-seeder spawn --source wikipedia \
+  --count 2 --batch-size 5 --max-batches 1 \
+  --base-url http://127.0.0.1:5003 --admin-key smoke
+
+# ArXiv smoke test:
+aether-seeder spawn --source arxiv \
+  --count 2 --batch-size 5 --max-batches 1 \
+  --base-url http://127.0.0.1:5003 --admin-key smoke
+
+# Grokipedia full-batch run:
 aether-seeder spawn -n 1 --source grokipedia \
-  --batch-size 50 \
-  --max-batches 5
+  --batch-size 50 --max-batches 5
 ```
 
 ## Production rollout

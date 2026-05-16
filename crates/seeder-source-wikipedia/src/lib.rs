@@ -52,6 +52,13 @@ impl WikipediaSource {
         Self::with_topics(topics::SEED_TOPICS.iter().copied())
     }
 
+    /// Build a source whose worklist is `SEED_TOPICS` rotated left by
+    /// `offset` — different `offset`s cause re-runs to explore different
+    /// slices first instead of always re-fetching the head of the list.
+    pub fn with_rotation(offset: usize) -> SeederResult<Self> {
+        Self::with_topics(topics::rotated_topics(offset).into_iter())
+    }
+
     pub fn with_topics<I>(topics: I) -> SeederResult<Self>
     where
         I: IntoIterator<Item = (&'static str, SephirotDomain)>,
