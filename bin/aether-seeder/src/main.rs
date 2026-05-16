@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Spawn { count, base_url, admin_key, source, batch_size, max_batches } => {
-            let src = build_source(&source).context("build source")?;
+            let src = build_source(&source).await.context("build source")?;
             run_swarm(count, base_url, admin_key, src, batch_size, max_batches).await
         }
     }
@@ -118,8 +118,14 @@ NB3: the seeder does not yet compute embeddings. aether-mind needs to
     );
 }
 
-fn build_source(name: &str) -> Result<Arc<dyn KnowledgeSource>> {
-    match name {
+async fn build_source(name: &str) -> Result<Arc<dyn KnowledgeSource>> {
+    // `name` may be plain (e.g. "wikipedia") or parameterised
+    // (e.g. "wikipedia-random:500" → 500 random titles).
+    let (base, param) = match name.split_once(':') {
+        Some((b, p)) => (b, Some(p)),
+        None => (name, None),
+    };
+    match base {
         "placeholder" => Ok(Arc::new(PlaceholderSource::new(2000))),
         "grokipedia" => {
             let src = seeder_source_grokipedia::GrokipediaSource::new()
@@ -129,6 +135,17 @@ fn build_source(name: &str) -> Result<Arc<dyn KnowledgeSource>> {
         "wikipedia" => {
             let src = seeder_source_wikipedia::WikipediaSource::new()
                 .context("build WikipediaSource")?;
+            Ok(Arc::new(src))
+        }
+        "wikipedia-random" => {
+            // Default pool size: 500 random titles per rotation. Tunable
+            // via `--source wikipedia-random:N`.
+            let pool: usize = param
+                .map(|p| p.parse().unwrap_or(500))
+                .unwrap_or(500);
+            let src = seeder_source_wikipedia::WikipediaSource::with_random_pool(pool)
+                .await
+                .context("build WikipediaSource random pool")?;
             Ok(Arc::new(src))
         }
         "arxiv" => {

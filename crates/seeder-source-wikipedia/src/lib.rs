@@ -42,7 +42,7 @@ const SEED_CONFIDENCE: f32 = 0.92;
 pub struct WikipediaSource {
     client: reqwest::Client,
     base_url: String,
-    worklist: Mutex<VecDeque<(&'static str, SephirotDomain)>>,
+    worklist: Mutex<VecDeque<(String, SephirotDomain)>>,
     pending_chunks: Mutex<VecDeque<SeedNode>>,
     dedup: SharedDedup,
 }
@@ -63,11 +63,50 @@ impl WikipediaSource {
     where
         I: IntoIterator<Item = (&'static str, SephirotDomain)>,
     {
+        Self::with_owned_topics(topics.into_iter().map(|(t, d)| (t.to_string(), d)))
+    }
+
+    /// Like `with_topics` but accepts owned `String` titles — used for
+    /// dynamic sources like the random-article pool.
+    pub fn with_owned_topics<I>(topics: I) -> SeederResult<Self>
+    where
+        I: IntoIterator<Item = (String, SephirotDomain)>,
+    {
         let client = reqwest::Client::builder()
             .timeout(DEFAULT_FETCH_TIMEOUT)
             .user_agent(DEFAULT_USER_AGENT)
             .build()
             .map_err(|e| SeederError::Transport(e.to_string()))?;
+        Ok(Self {
+            client,
+            base_url: DEFAULT_BASE_URL.to_string(),
+            worklist: Mutex::new(topics.into_iter().collect()),
+            pending_chunks: Mutex::new(VecDeque::new()),
+            dedup: shared_dedup(),
+        })
+    }
+
+    /// Build a WikipediaSource seeded with `n` random article titles
+    /// fetched live from `action=query&list=random`. Each title is
+    /// assigned to a Sephirot domain via stable string hashing so the
+    /// fabric stays roughly balanced across domains over time.
+    ///
+    /// Wikipedia caps `rnlimit` at 500 per call, so we batch.
+    pub async fn with_random_pool(n: usize) -> SeederResult<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(DEFAULT_FETCH_TIMEOUT)
+            .user_agent(DEFAULT_USER_AGENT)
+            .build()
+            .map_err(|e| SeederError::Transport(e.to_string()))?;
+        let titles = fetch_random_titles(&client, DEFAULT_BASE_URL, n).await?;
+        let topics: Vec<(String, SephirotDomain)> = titles
+            .into_iter()
+            .map(|t| {
+                let d = hash_to_domain(&t);
+                (t, d)
+            })
+            .collect();
+        debug!(count = topics.len(), "wikipedia-random pool seeded");
         Ok(Self {
             client,
             base_url: DEFAULT_BASE_URL.to_string(),
@@ -151,7 +190,7 @@ impl WikipediaSource {
             return Ok(());
         };
 
-        let body = match self.fetch_article(title).await? {
+        let body = match self.fetch_article(&title).await? {
             Some(b) => b,
             None => return Ok(()),
         };
@@ -236,6 +275,93 @@ struct WikipediaPage {
     title: Option<String>,
     #[serde(default)]
     extract: Option<String>,
+}
+
+// ── Random-article pool ──────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct RandomEnvelope {
+    query: RandomQuery,
+}
+
+#[derive(Debug, Deserialize)]
+struct RandomQuery {
+    random: Vec<RandomEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RandomEntry {
+    title: String,
+}
+
+/// Fetch up to `n` random article titles. Wikipedia caps `rnlimit` at
+/// 500 per request; we batch when n > 500 with multiple sequential calls.
+/// Article namespace only (ns=0), so no User_talk / Category / etc.
+async fn fetch_random_titles(
+    client: &reqwest::Client,
+    base_url: &str,
+    n: usize,
+) -> SeederResult<Vec<String>> {
+    let mut out = Vec::with_capacity(n);
+    let mut remaining = n;
+    while remaining > 0 {
+        let batch = remaining.min(500);
+        let resp = client
+            .get(base_url)
+            .query(&[
+                ("action", "query"),
+                ("format", "json"),
+                ("list", "random"),
+                ("rnnamespace", "0"),
+                ("rnlimit", &batch.to_string()),
+            ])
+            .send()
+            .await
+            .map_err(|e| SeederError::Transport(format!("random list: {e}")))?;
+        if !resp.status().is_success() {
+            warn!(status = %resp.status(), "wikipedia random list non-success");
+            break;
+        }
+        let envelope: RandomEnvelope = resp
+            .json()
+            .await
+            .map_err(|e| SeederError::Transport(format!("random parse: {e}")))?;
+        let returned = envelope.query.random.len();
+        for entry in envelope.query.random {
+            // The MediaWiki action API returns titles with spaces; the
+            // article fetch path accepts either underscores or spaces
+            // when `redirects=1` is set, so leave as-is.
+            out.push(entry.title);
+        }
+        if returned == 0 {
+            break;
+        }
+        remaining = remaining.saturating_sub(returned);
+    }
+    Ok(out)
+}
+
+/// Stable string-hash → Sephirot bucket. Keeps the random pool roughly
+/// balanced across the 10 cognitive domains without needing remote
+/// classification.
+fn hash_to_domain(s: &str) -> SephirotDomain {
+    let mut h: u64 = 1469598103934665603; // FNV-1a offset
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(1099511628211);
+    }
+    match h % 10 {
+        0 => SephirotDomain::Keter,
+        1 => SephirotDomain::Chochmah,
+        2 => SephirotDomain::Binah,
+        3 => SephirotDomain::Chesed,
+        4 => SephirotDomain::Gevurah,
+        5 => SephirotDomain::Tiferet,
+        6 => SephirotDomain::Netzach,
+        7 => SephirotDomain::Hod,
+        8 => SephirotDomain::Yesod,
+        _ => SephirotDomain::Malkuth,
+    }
 }
 
 // ── Sentence-aware chunker (Rust regex has no look-around) ───────────
