@@ -3,11 +3,13 @@
 //!
 //! ArXiv's API guidance (https://info.arxiv.org/help/api/index.html)
 //! asks for a User-Agent identifying the project and a delay of ≥3
-//! seconds between requests from the same IP. The seeder's per-batch
-//! inter-batch-pause (default 500ms) combined with the worklist-pop
-//! pattern (one fetch per refill_from_next_topic) stays inside that
-//! budget at small concurrency. At 10+ workers we'd need to add a
-//! global rate-limiter; that's a follow-up.
+//! seconds between requests from the same IP. This crate enforces
+//! that delay via a per-source rate limiter (`RateLimitState`) shared
+//! across all `fetch_batch` callers on the same `ArxivSource`. On HTTP
+//! 429 the limiter consumes the `Retry-After` header when present and
+//! falls back to exponential backoff (5s × 2^consecutive_throttles,
+//! capped at 5 min) otherwise. Throttled topics are pushed back to the
+//! front of the worklist so no work is lost.
 //!
 //! Topic list is a curated set of ~80 arXiv IDs across foundational
 //! ML, distributed systems, and quantum computing papers — the
@@ -16,7 +18,7 @@
 pub mod topics;
 
 use std::collections::VecDeque;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
@@ -26,7 +28,8 @@ use seeder_common::{
     SharedDedup,
 };
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tokio::time::sleep;
+use tracing::{debug, info, warn};
 
 const DEFAULT_BASE_URL: &str = "https://export.arxiv.org/api/query";
 const DEFAULT_USER_AGENT: &str =
@@ -38,12 +41,52 @@ const CHUNK_MIN_CHARS: usize = 40;
 const ABSTRACT_MAX_CHARS: usize = 8_000;
 const SEED_CONFIDENCE: f32 = 0.95; // peer-reviewed → higher than wiki
 
+/// arXiv's stated minimum inter-request interval. One worker hitting
+/// closer than this will earn 429s eventually.
+const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(3);
+/// Base backoff when arXiv returns 429 without a Retry-After header.
+const BACKOFF_BASE: Duration = Duration::from_secs(5);
+/// Ceiling on the exponential backoff. Past this we stop doubling.
+const BACKOFF_MAX: Duration = Duration::from_secs(300);
+
 pub struct ArxivSource {
     client: reqwest::Client,
     base_url: String,
     worklist: Mutex<VecDeque<(&'static str, SephirotDomain)>>,
     pending_chunks: Mutex<VecDeque<SeedNode>>,
     dedup: SharedDedup,
+    rate_limit: Mutex<RateLimitState>,
+}
+
+/// Per-source rate-limit ledger. Held inside a `Mutex` on the
+/// `ArxivSource` so concurrent workers share one pacing token rather
+/// than each holding their own.
+struct RateLimitState {
+    /// Wall-clock instant before which the next request must not be sent.
+    next_allowed: Instant,
+    /// Count of consecutive 429s observed since the last 2xx.
+    /// Used for exponential backoff when `Retry-After` is absent.
+    consecutive_throttles: u32,
+}
+
+impl RateLimitState {
+    fn new() -> Self {
+        Self {
+            next_allowed: Instant::now(),
+            consecutive_throttles: 0,
+        }
+    }
+}
+
+/// What `fetch_paper` saw for one arxiv_id.
+enum FetchOutcome {
+    /// Usable abstract.
+    Body(String),
+    /// arXiv said the paper has no usable summary (404, missing
+    /// summary tag, summary too short, etc.). Drop the topic permanently.
+    Skip,
+    /// 429. Topic gets re-queued; rate limiter already updated.
+    Throttled,
 }
 
 impl ArxivSource {
@@ -66,6 +109,7 @@ impl ArxivSource {
             worklist: Mutex::new(topics.into_iter().collect()),
             pending_chunks: Mutex::new(VecDeque::new()),
             dedup: shared_dedup(),
+            rate_limit: Mutex::new(RateLimitState::new()),
         })
     }
 
@@ -73,7 +117,59 @@ impl ArxivSource {
         self.base_url = base_url.into();
     }
 
-    async fn fetch_paper(&self, arxiv_id: &str) -> SeederResult<Option<String>> {
+    /// Block until the rate limiter says we may send the next request,
+    /// then advance `next_allowed` by `MIN_REQUEST_INTERVAL`. Concurrent
+    /// callers serialize through the mutex and line up at successive
+    /// 3-second slots rather than burst-firing.
+    async fn acquire_rate_limit_slot(&self) {
+        let wait = {
+            let mut state = self.rate_limit.lock().await;
+            let now = Instant::now();
+            let wait = state.next_allowed.saturating_duration_since(now);
+            let scheduled_at = if wait.is_zero() { now } else { state.next_allowed };
+            state.next_allowed = scheduled_at + MIN_REQUEST_INTERVAL;
+            wait
+        };
+        if !wait.is_zero() {
+            debug!(wait_ms = wait.as_millis() as u64, "arxiv rate-limit pause");
+            sleep(wait).await;
+        }
+    }
+
+    /// Record a 429. Use `Retry-After` if provided; otherwise apply
+    /// exponential backoff (5s × 2^consecutive_throttles, capped).
+    async fn note_throttle(&self, retry_after: Option<Duration>) {
+        let mut state = self.rate_limit.lock().await;
+        state.consecutive_throttles = state.consecutive_throttles.saturating_add(1);
+        let wait = retry_after.unwrap_or_else(|| {
+            // shift = throttles - 1, capped so we don't overflow.
+            let shift = state.consecutive_throttles.saturating_sub(1).min(6);
+            BACKOFF_BASE
+                .checked_mul(1u32 << shift)
+                .unwrap_or(BACKOFF_MAX)
+                .min(BACKOFF_MAX)
+        });
+        let target = Instant::now() + wait;
+        if target > state.next_allowed {
+            state.next_allowed = target;
+        }
+        info!(
+            consecutive_throttles = state.consecutive_throttles,
+            wait_secs = wait.as_secs(),
+            retry_after_provided = retry_after.is_some(),
+            "arxiv backoff scheduled"
+        );
+    }
+
+    /// Reset throttle counter on a successful 2xx.
+    async fn note_success(&self) {
+        let mut state = self.rate_limit.lock().await;
+        state.consecutive_throttles = 0;
+    }
+
+    async fn fetch_paper(&self, arxiv_id: &str) -> SeederResult<FetchOutcome> {
+        self.acquire_rate_limit_slot().await;
+
         let resp = self
             .client
             .get(&self.base_url)
@@ -81,10 +177,25 @@ impl ArxivSource {
             .send()
             .await
             .map_err(|e| SeederError::Transport(format!("fetch {arxiv_id}: {e}")))?;
-        if !resp.status().is_success() {
-            warn!(arxiv_id, status = %resp.status(), "arxiv non-success");
-            return Ok(None);
+
+        let status = resp.status();
+        if status.as_u16() == 429 {
+            let retry_after = parse_retry_after_seconds(resp.headers().get("retry-after"))
+                .map(Duration::from_secs);
+            self.note_throttle(retry_after).await;
+            warn!(
+                arxiv_id,
+                retry_after_secs = retry_after.map(|d| d.as_secs()),
+                "arxiv throttled (429); re-queueing topic"
+            );
+            return Ok(FetchOutcome::Throttled);
         }
+        if !status.is_success() {
+            warn!(arxiv_id, status = %status, "arxiv non-success");
+            return Ok(FetchOutcome::Skip);
+        }
+        self.note_success().await;
+
         let xml = resp
             .text()
             .await
@@ -99,11 +210,11 @@ impl ArxivSource {
             .filter(|s| s.len() >= 100);
         let Some(summary) = summary else {
             debug!(arxiv_id, "no usable summary");
-            return Ok(None);
+            return Ok(FetchOutcome::Skip);
         };
 
         let summary = safe_truncate(&summary, ABSTRACT_MAX_CHARS);
-        Ok(Some(format!("{title}\n\n{summary}")))
+        Ok(FetchOutcome::Body(format!("{title}\n\n{summary}")))
     }
 
     async fn refill_from_next_topic(&self) -> SeederResult<()> {
@@ -122,8 +233,15 @@ impl ArxivSource {
         };
 
         let body = match self.fetch_paper(arxiv_id).await? {
-            Some(b) => b,
-            None => return Ok(()),
+            FetchOutcome::Body(b) => b,
+            FetchOutcome::Skip => return Ok(()),
+            FetchOutcome::Throttled => {
+                // Re-queue to the front so this topic is retried first
+                // after the backoff clears.
+                let mut wl = self.worklist.lock().await;
+                wl.push_front((arxiv_id, domain));
+                return Ok(());
+            }
         };
 
         let mut new_chunks = Vec::new();
@@ -145,6 +263,15 @@ impl ArxivSource {
         pending.extend(new_chunks);
         Ok(())
     }
+}
+
+/// Parse the `Retry-After` header value as an integer number of seconds.
+/// Returns `None` if absent, non-ASCII, non-integer, or the HTTP-date
+/// variant (which arXiv doesn't use; exponential fallback covers it).
+fn parse_retry_after_seconds(header: Option<&reqwest::header::HeaderValue>) -> Option<u64> {
+    header
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
 #[async_trait]
@@ -318,5 +445,85 @@ mod tests {
     #[test]
     fn topics_has_breadth() {
         assert!(topics::SEED_TOPICS.len() >= 40);
+    }
+
+    #[test]
+    fn parse_retry_after_seconds_handles_valid_integers() {
+        use reqwest::header::HeaderValue;
+        let v = HeaderValue::from_static("120");
+        assert_eq!(parse_retry_after_seconds(Some(&v)), Some(120));
+        let v = HeaderValue::from_static("  5  ");
+        assert_eq!(parse_retry_after_seconds(Some(&v)), Some(5));
+    }
+
+    #[test]
+    fn parse_retry_after_seconds_none_for_malformed_or_missing() {
+        use reqwest::header::HeaderValue;
+        assert_eq!(parse_retry_after_seconds(None), None);
+        // HTTP-date variant — unsupported, falls back to exp backoff.
+        let v = HeaderValue::from_static("Fri, 31 Dec 2026 23:59:59 GMT");
+        assert_eq!(parse_retry_after_seconds(Some(&v)), None);
+        let v = HeaderValue::from_static("not-a-number");
+        assert_eq!(parse_retry_after_seconds(Some(&v)), None);
+    }
+
+    #[tokio::test]
+    async fn acquire_advances_next_allowed_by_min_interval() {
+        let src = ArxivSource::with_topics(std::iter::empty()).unwrap();
+        let before = Instant::now();
+        src.acquire_rate_limit_slot().await;
+        let next_allowed = src.rate_limit.lock().await.next_allowed;
+        // First slot returns immediately; next_allowed jumps to
+        // ~MIN_REQUEST_INTERVAL beyond "before". Allow 500ms slack for
+        // lock acquisition + scheduler noise.
+        let gap = next_allowed.saturating_duration_since(before);
+        assert!(
+            gap >= MIN_REQUEST_INTERVAL.saturating_sub(Duration::from_millis(500)),
+            "gap too small: {:?}",
+            gap
+        );
+        assert!(
+            gap <= MIN_REQUEST_INTERVAL + Duration::from_millis(500),
+            "gap too large: {:?}",
+            gap
+        );
+    }
+
+    #[tokio::test]
+    async fn note_throttle_uses_retry_after_when_present() {
+        let src = ArxivSource::with_topics(std::iter::empty()).unwrap();
+        let t0 = Instant::now();
+        src.note_throttle(Some(Duration::from_secs(7))).await;
+        let state = src.rate_limit.lock().await;
+        assert_eq!(state.consecutive_throttles, 1);
+        assert!(state.next_allowed >= t0 + Duration::from_secs(7));
+        // Sanity bound: shouldn't be more than a few hundred ms past 7s.
+        assert!(state.next_allowed <= t0 + Duration::from_secs(8));
+    }
+
+    #[tokio::test]
+    async fn note_throttle_exponential_backoff_without_retry_after() {
+        let src = ArxivSource::with_topics(std::iter::empty()).unwrap();
+        // First 429 → BACKOFF_BASE (5s).
+        let t0 = Instant::now();
+        src.note_throttle(None).await;
+        {
+            let state = src.rate_limit.lock().await;
+            assert_eq!(state.consecutive_throttles, 1);
+            assert!(state.next_allowed >= t0 + BACKOFF_BASE);
+            assert!(state.next_allowed <= t0 + BACKOFF_BASE + Duration::from_millis(500));
+        }
+        // Second 429 → 10s.
+        let t1 = Instant::now();
+        src.note_throttle(None).await;
+        {
+            let state = src.rate_limit.lock().await;
+            assert_eq!(state.consecutive_throttles, 2);
+            assert!(state.next_allowed >= t1 + Duration::from_secs(10));
+        }
+        // note_success resets the counter.
+        src.note_success().await;
+        let state = src.rate_limit.lock().await;
+        assert_eq!(state.consecutive_throttles, 0);
     }
 }
