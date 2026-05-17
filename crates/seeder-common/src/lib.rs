@@ -62,6 +62,32 @@ pub enum SephirotDomain {
     Malkuth = 9,
 }
 
+impl SephirotDomain {
+    /// Stable FNV-1a hash → Sephirot bucket. Keeps a free-form string-keyed
+    /// pool roughly balanced across the 10 cognitive domains without needing
+    /// remote classification. The mapping is deterministic and stable across
+    /// releases — change with care, as historical content_hashes would shift.
+    pub fn from_hash(s: &str) -> SephirotDomain {
+        let mut h: u64 = 1469598103934665603; // FNV-1a offset basis
+        for b in s.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
+        match h % 10 {
+            0 => SephirotDomain::Keter,
+            1 => SephirotDomain::Chochmah,
+            2 => SephirotDomain::Binah,
+            3 => SephirotDomain::Chesed,
+            4 => SephirotDomain::Gevurah,
+            5 => SephirotDomain::Tiferet,
+            6 => SephirotDomain::Netzach,
+            7 => SephirotDomain::Hod,
+            8 => SephirotDomain::Yesod,
+            _ => SephirotDomain::Malkuth,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SeederError {
     #[error("source exhausted")]
@@ -162,5 +188,20 @@ mod tests {
         assert!(d.insert_new(h));
         assert!(!d.insert_new(h));
         assert_eq!(d.len(), 1);
+    }
+
+    #[test]
+    fn from_hash_is_deterministic_and_covers_domains() {
+        // Determinism: same input → same output.
+        let a = SephirotDomain::from_hash("quantum_entanglement");
+        let b = SephirotDomain::from_hash("quantum_entanglement");
+        assert_eq!(a, b);
+        // Coverage: hashing the integers 0..1000 should hit > 1 distinct
+        // domain (probability of single-domain coverage is ~10^-1000).
+        let mut seen = HashSet::new();
+        for i in 0..1000 {
+            seen.insert(SephirotDomain::from_hash(&i.to_string()) as u8);
+        }
+        assert!(seen.len() >= 5, "from_hash should spread across domains");
     }
 }

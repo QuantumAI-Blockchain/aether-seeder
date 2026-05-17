@@ -6,6 +6,10 @@ members = [
     "crates/seeder-source-grokipedia",
     "crates/seeder-source-wikipedia",
     "crates/seeder-source-arxiv",
+    "crates/seeder-source-arxiv-recent",
+    "crates/seeder-source-gutenberg",
+    "crates/seeder-source-stackexchange",
+    "crates/seeder-source-huggingface",
     "bin/aether-seeder",
 ]
 
@@ -18,7 +22,7 @@ repository = "https://github.com/QuantumAI-Blockchain/aether-seeder"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

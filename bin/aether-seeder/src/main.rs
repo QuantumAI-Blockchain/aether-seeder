@@ -42,8 +42,17 @@ enum Cmd {
         /// `grokipedia` (curated articles from grokipedia.com, ~100 topics),
         /// `wikipedia` (MediaWiki extract API, ~200 topics across all 10
         /// Sephirot domains),
+        /// `wikipedia-random[:N]` (random article pool, default N=500),
         /// `arxiv` (paper abstracts from the arXiv Atom API, ~65 papers
-        /// across foundational ML / quantum / RL / alignment).
+        /// across foundational ML / quantum / RL / alignment),
+        /// `arxiv-recent` (rolling fresh papers via arXiv RSS feeds across
+        /// CS/AI, ML, NLP, security, quant-ph and statistics),
+        /// `gutenberg[:N]` (public-domain books via gutendex listing API
+        /// + raw plaintext mirror; N = books per topic, default 30),
+        /// `stackexchange` (top-voted questions across StackOverflow,
+        /// Math, CS, Physics, CSTheory and Data Science),
+        /// `huggingface-fineweb` (alias `fineweb`; curated educational web
+        /// text from FineWeb-edu via datasets-server).
         #[arg(long, default_value = "placeholder")]
         source: String,
 
@@ -151,6 +160,36 @@ async fn build_source(name: &str) -> Result<Arc<dyn KnowledgeSource>> {
         "arxiv" => {
             let src = seeder_source_arxiv::ArxivSource::new()
                 .context("build ArxivSource")?;
+            Ok(Arc::new(src))
+        }
+        "arxiv-recent" => {
+            let src = seeder_source_arxiv_recent::ArxivRecentSource::new()
+                .await
+                .context("build ArxivRecentSource")?;
+            Ok(Arc::new(src))
+        }
+        "gutenberg" => {
+            let books_per_topic: usize = param
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(seeder_source_gutenberg::DEFAULT_BOOKS_PER_TOPIC);
+            let src = seeder_source_gutenberg::GutenbergSource::with_topic_pool(
+                seeder_source_gutenberg::DEFAULT_TOPICS,
+                books_per_topic,
+            )
+            .await
+            .context("build GutenbergSource")?;
+            Ok(Arc::new(src))
+        }
+        "stackexchange" => {
+            let src = seeder_source_stackexchange::StackExchangeSource::new_default()
+                .await
+                .context("build StackExchangeSource")?;
+            Ok(Arc::new(src))
+        }
+        "huggingface-fineweb" | "fineweb" => {
+            let src = seeder_source_huggingface::FineWebSource::new_default()
+                .await
+                .context("build FineWebSource")?;
             Ok(Arc::new(src))
         }
         other => anyhow::bail!(

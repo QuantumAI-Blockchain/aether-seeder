@@ -1,0 +1,17 @@
+[package]
+name = "seeder-source-arxiv-recent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "KnowledgeSource implementation that pulls the latest arXiv submissions across multiple categories from the RSS feeds, then fetches each paper's abstract via the Atom API."
+
+[dependencies]
+seeder-common = { path = "../seeder-common" }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }

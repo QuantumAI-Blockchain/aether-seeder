@@ -102,7 +102,7 @@ impl WikipediaSource {
         let topics: Vec<(String, SephirotDomain)> = titles
             .into_iter()
             .map(|t| {
-                let d = hash_to_domain(&t);
+                let d = SephirotDomain::from_hash(&t);
                 (t, d)
             })
             .collect();
@@ -339,29 +339,6 @@ async fn fetch_random_titles(
         remaining = remaining.saturating_sub(returned);
     }
     Ok(out)
-}
-
-/// Stable string-hash → Sephirot bucket. Keeps the random pool roughly
-/// balanced across the 10 cognitive domains without needing remote
-/// classification.
-fn hash_to_domain(s: &str) -> SephirotDomain {
-    let mut h: u64 = 1469598103934665603; // FNV-1a offset
-    for b in s.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(1099511628211);
-    }
-    match h % 10 {
-        0 => SephirotDomain::Keter,
-        1 => SephirotDomain::Chochmah,
-        2 => SephirotDomain::Binah,
-        3 => SephirotDomain::Chesed,
-        4 => SephirotDomain::Gevurah,
-        5 => SephirotDomain::Tiferet,
-        6 => SephirotDomain::Netzach,
-        7 => SephirotDomain::Hod,
-        8 => SephirotDomain::Yesod,
-        _ => SephirotDomain::Malkuth,
-    }
 }
 
 // ── Sentence-aware chunker (Rust regex has no look-around) ───────────

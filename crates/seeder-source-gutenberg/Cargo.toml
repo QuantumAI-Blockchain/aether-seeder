@@ -1,0 +1,17 @@
+[package]
+name = "seeder-source-gutenberg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "KnowledgeSource implementation that pulls Project Gutenberg public-domain books via the gutendex.com listing API + raw plaintext mirrors, strips PG headers/footers, and chunks into Sephirot-tagged seed nodes."
+
+[dependencies]
+seeder-common = { path = "../seeder-common" }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

@@ -16,6 +16,10 @@ seeder-agent = { path = "../../crates/seeder-agent" }
 seeder-source-grokipedia = { path = "../../crates/seeder-source-grokipedia" }
 seeder-source-wikipedia = { path = "../../crates/seeder-source-wikipedia" }
 seeder-source-arxiv = { path = "../../crates/seeder-source-arxiv" }
+seeder-source-arxiv-recent = { path = "../../crates/seeder-source-arxiv-recent" }
+seeder-source-gutenberg = { path = "../../crates/seeder-source-gutenberg" }
+seeder-source-stackexchange = { path = "../../crates/seeder-source-stackexchange" }
+seeder-source-huggingface = { path = "../../crates/seeder-source-huggingface" }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
